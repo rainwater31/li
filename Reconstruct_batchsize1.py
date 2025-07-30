@@ -41,6 +41,45 @@ from torch.utils.data import DataLoader, random_split
 from PIL import Image
 
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# 新增：异常分数计算相关模块
+class Autoencoder(nn.Module):
+    """用于计算异常分数的自编码器"""
+    def __init__(self, in_channels=3):
+        super(Autoencoder, self).__init__()
+        # 编码器
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        # 解码器
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(32, in_channels, kernel_size=4, stride=2, padding=1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
+def anomaly_score(ae_model, x, device):
+    """计算输入图像的异常分数（基于重构误差）"""
+    ae_model.eval()
+    with torch.no_grad():
+        x_recon = ae_model(x)
+        # 计算MSE重构误差作为异常分数
+        recon_error = torch.mean(torch.square(x - x_recon))
+    return recon_error
+
 # 图片格式转换
 def image_to_tensor(image, shape_img, device):
     transform1 = transforms.Compose([
@@ -137,6 +176,15 @@ def HCGLA_generator(original_img, attacked_model_type="lenet"):
 
 
 def recovery(opt, id):
+    # 新增：初始化自编码器用于计算异常分数
+    ae_model = Autoencoder().to(device)
+    try:
+        # 尝试加载预训练自编码器权重
+        ae_model.load_state_dict(torch.load(opt.ae_path, map_location=torch.device(device)))
+        print("成功加载预训练自编码器模型")
+    except:
+        print("使用随机初始化的自编码器计算异常分数")
+    
     if opt.filter and opt.filter_method == "HCGLA-Filter":
         if opt.model_type == "LeNet":
             if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
@@ -244,6 +292,14 @@ def recovery(opt, id):
     # 第二次训练，使用其中一张图片
     gt_data = gt_data_1
     gt_label = gt_label_1
+    '''
+    
+    # 加载单张图像数据
+    gt_data = dst[id][0].to(device)
+    if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
+        gt_data = torch.cat([gt_data, gt_data, gt_data], dim=0)
+    gt_data = gt_data.view(1, gt_data.shape[0], gt_data.shape[1], gt_data.shape[2])
+    gt_label = torch.tensor([dst[id][1]]).to(torch.int64).to(device)
 
     gt_input = gt_data
     out = net(gt_input)
@@ -262,7 +318,7 @@ def recovery(opt, id):
     original_dy_dx_3 = list((_.detach().clone().cpu() for _ in dy_dx_3))
 
     # 计算两次梯度的差值
-    original_dy_dx = [dy1 - dy2 for dy1, dy2 in zip(summed_gradients, original_dy_dx_3)]
+    original_dy_dx = original_dy_dx_3  # 简化为单张图像的梯度
 
     # 将梯度差值压缩并添加噪声
     dy_dx, mask_tuple = compress(original_dy_dx, opt.compress_rate)
@@ -348,18 +404,7 @@ def recovery(opt, id):
         else:
             print("Undefined attacked_model_type")
             exit()
-        # if dummy_data is not None:
-        #     dummy_data = tt(tp(dummy_data)).to(device)
-        # else:
-        #     # 处理 dummy_data 为空的情况，例如给出警告或者处理其他逻辑
-        #     pass
-
         dummy_data = tt(tp(dummy_data)).to(device)
-        # if dummy_data is not None:
-        #     dummy_data = dummy_data.view(1, *dummy_data.size()).requires_grad_(True)
-        # else:
-        #     # 处理 dummy_data 为空的情况，例如给出警告或者处理其他逻辑
-        #     pass
         dummy_data = dummy_data.view(1, *dummy_data.size()).requires_grad_(True)
         init_data = copy.deepcopy(dummy_data)
         print("生成器初始化完成")
@@ -381,8 +426,6 @@ def recovery(opt, id):
         optimizer = torch.optim.Adam([dummy_data], lr=opt.lr)
     else:
         label_pred= gt_label
-        # label_pred = torch.argmin(torch.sum(original_dy_dx[-2], dim=-1), dim=-1).detach().reshape((1,)).requires_grad_(
-        #     False)
         optimizer = torch.optim.Adam([dummy_data], lr=opt.lr)
         print("预测的标签是:", label_pred)
 
@@ -392,6 +435,7 @@ def recovery(opt, id):
     mses = []
     psnrs = []
     ssims = []
+    anomaly_scores = []  # 新增：保存异常分数
     train_iters = []
     print('lr =', opt.lr)
 
@@ -400,29 +444,30 @@ def recovery(opt, id):
         def closure():
             optimizer.zero_grad()
             pred = net(dummy_data)
+            
+            # 计算总变差损失
             def total_variation_loss(dummy_data):
-                # img: 输入图像张量，形状为 (C, H, W)
-
-                # 计算垂直方向的差异
-                vertical_diff = dummy_data[:, 1:, :] - dummy_data[:, :-1, :]  # (C, H-1, W)
-                # 计算水平方向的差异
-                horizontal_diff = dummy_data[:, :, 1:] - dummy_data[:, :, :-1]  # (C, H, W-1)
-
-                # 计算总变异损失
-                tv_loss = torch.sum(torch.abs(vertical_diff)) + torch.sum(torch.abs(horizontal_diff))
-
-                return tv_loss
+                vertical_diff = dummy_data[:, :, 1:, :] - dummy_data[:, :, :-1, :]
+                horizontal_diff = dummy_data[:, :, :, 1:] - dummy_data[:, :, :, :-1]
+                return torch.sum(torch.abs(vertical_diff)) + torch.sum(torch.abs(horizontal_diff))
 
             tv_loss = total_variation_loss(dummy_data)
-            # data_difference_loss = torch.nn.functional.mse_loss(dummy_data, real_data)
+            
+            # 计算基础损失
             if opt.method == 'DLG':
-                # 将假的预测进行softmax归一化，转换为概率
                 dummy_loss = - torch.mean(
                     torch.sum(torch.softmax(dummy_label, -1) * torch.log(torch.softmax(pred, -1)), dim=-1))
             else:
-                dummy_loss = criterion(pred, gt_label)+ tv_loss
-            dummy_dy_dx = torch.autograd.grad(dummy_loss, net.parameters(), create_graph=True)
-            # dummy_dy_dx的非topk位置置0
+                dummy_loss = criterion(pred, gt_label)
+            
+            # 新增：计算异常分数损失
+            current_anomaly_score = anomaly_score(ae_model, dummy_data, device)
+            
+            # 新增：组合损失函数（加入异常分数损失）
+            total_loss = dummy_loss + 0.001 * tv_loss + opt.anomaly_weight * current_anomaly_score
+            
+            # 计算梯度
+            dummy_dy_dx = torch.autograd.grad(total_loss, net.parameters(), create_graph=True)
             dummy_dy_dx = list(dummy_dy_dx)
 
             if opt.method == 'HCGLA':
@@ -432,75 +477,64 @@ def recovery(opt, id):
                     i += 1
             grad_diff = 0
             if opt.method == 'geiping':
-                # for gx, gy in zip(dummy_dy_dx, original_dy_dx):
-                # if opt.model_type == "LeNet":
                 ex = original_dy_dx[0]
                 weights = torch.arange(len(original_dy_dx), 0, -1, dtype=ex.dtype, device=ex.device)/ len(original_dy_dx)
                 for ii in range(len(original_dy_dx)):
                     grad_diff += 1 - torch.cosine_similarity(dummy_dy_dx[ii].flatten(), original_dy_dx[ii].flatten(), 0, 1e-10) * weights[ii]
-                    grad_diff += ((dummy_dy_dx[ii] - original_dy_dx[ii]) ** 2).sum()
+                    grad_diff += ((dummy_dy_dx[ii] - original_dy_dx[ii]) **2).sum()
                 grad_diff += total_variation(dummy_data)
-                # else:
-                #     gx = dummy_dy_dx[-2]
-                #     gy = original_dy_dx[-2]
-                #     grad_diff += 1 - torch.cosine_similarity(gx.flatten(), gy.flatten(), 0, 1e-10)
-                #     # grad_diff += ((gx - gy) ** 2).sum()
-                #     grad_diff += total_variation(dummy_data)
             elif opt.method == 'HCGLA':
                 if opt.model_type == "LeNet":
-
-
-                    # # 计算余弦相似度
-                    # def cosine_similarity(x, y):
-                    #     cos_sim = F1.cosine_similarity(x.view(-1), y.view(-1), dim=0)
-                    #     return cos_sim
-                    #
-                    # grad_diff = 0
-                    # for gx, gy in zip(dummy_dy_dx, original_dy_dx):
-                    #     cos_sim = cosine_similarity(gx, gy)
-                    #     grad_diff += (1 - cos_sim)  # 余弦相似度越大，相似度越高，因此用 1 减去余弦相似度来表示差异
-
                     for gx, gy in zip(dummy_dy_dx, original_dy_dx_3):
                         gx = gx.to(device)
                         gy = gy.to(device)
-                        grad_diff += ((gx - gy) ** 2).sum()
-                        grad_diff = grad_diff
+                        grad_diff += ((gx - gy)** 2).sum()
                 else:
                     gx = dummy_dy_dx[-2]
                     gy = original_dy_dx[-2]
-                    grad_diff += ((gx - gy) ** 2).sum()
+                    grad_diff += ((gx - gy) **2).sum()
             else:
                 for gx, gy in zip(dummy_dy_dx, original_dy_dx):
-                    grad_diff += ((gx - gy) ** 2).sum()
-            # print("grad_diff:", grad_diff)
+                    grad_diff += ((gx - gy)** 2).sum()
+            
+            # 新增：将异常分数损失加入梯度差异
+            grad_diff += opt.anomaly_weight * current_anomaly_score
+            
             grad_diff.backward()
             return grad_diff
 
-        # mses.append(torch.mean((dummy_data - gt_data) ** 2).item())
-        # mses.append((np.abs(dummy_data - gt_data) ** 2).mean())
+        # 计算评估指标
         dummy_data_np = dummy_data[0].detach().cpu().numpy().transpose(1,2,0)
         gt_data_np = gt_data[0].detach().cpu().numpy().transpose(1,2,0)
         dummy_data_np = dummy_data_np.astype(np.float64)
         gt_data_np = gt_data_np.astype(np.float64)
         mses.append(mean_squared_error(dummy_data_np, gt_data_np))
-        # psnr = 20 * math.log10(1 / (math.sqrt(mses[-1]) + 0.0000000001))
-        # psnrs.append(peak_signal_noise_ratio(dummy_data_np, gt_data_np))
         psnrs.append(10 * np.log10(255 * 255 / mses[-1]))
         data_range = 255
         ssims.append(structural_similarity(dummy_data_np, gt_data_np, multichannel=True,data_range=data_range))
+        
+        # 新增：计算并保存异常分数
+        current_anomaly = anomaly_score(ae_model, dummy_data, device).item()
+        anomaly_scores.append(current_anomaly)
+        
+        # 执行优化
         optimizer.step(closure)
         current_loss = closure().item()
         train_iters.append(iters)
         losses.append(current_loss)
+        
+        # 打印信息（包含异常分数）
         if not opt.isSave:
             current_time = str(time.strftime("[%Y-%m-%d %H:%M:%S]", time.localtime()))
             print(current_time, iters,
-                  'loss = %.8f, mse = %.8f, psnr:%.8f, ssim:%.8f' % (current_loss, mses[-1], psnrs[-1], ssims[-1]))
+                  'loss = %.8f, mse = %.8f, psnr:%.8f, ssim:%.8f, anomaly:%.8f' % 
+                  (current_loss, mses[-1], psnrs[-1], ssims[-1], current_anomaly))
 
-        # if iters <= 30 and iters >= 1 or iters in [40, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
+        # 保存中间结果
         if opt.isSave and ( iters in [1,5,15,20,25, 30, 35, 40, 45,50,110,120,130,140,150,160,170,180,190,200] or iters % 100 == 0) and iters > 0:
             current_time = str(time.strftime("[%Y-%m-%d %H:%M:%S]", time.localtime()))
-            print(current_time, iters, 'loss = %.8f, mse = %.8f, psnr:%.8f, ssim:%.8f' % (current_loss, mses[-1], psnrs[-1], ssims[-1]))
+            print(current_time, iters, 'loss = %.8f, mse = %.8f, psnr:%.8f, ssim:%.8f, anomaly:%.8f' % 
+                  (current_loss, mses[-1], psnrs[-1], ssims[-1], current_anomaly))
             history.append(tp(dummy_data[0].cpu()))
             history_iters.append(iters)
 
@@ -511,15 +545,12 @@ def recovery(opt, id):
             else:
                 plt.suptitle('%s %s %s %s on %s %05dth picture' % (
                 opt.model_type, opt.method, opt.init_method, opt.compress_rate, opt.dataset, id))
-            # fig = plt.figure()
             plt.subplot(4, 11, 1)
-            # 绘制真实图像
             plt.imshow(tp(gt_data[0].cpu()))
             plt.axis('off')
             plt.subplot(4, 11, 2)
             plt.imshow(tp(init_data[0]))
             plt.title('Initial', fontdict={"family": "Times New Roman", "size": 16})
-            # plt.subplots_adjust(left=None, right=None, bottom=None, top=None, wspace=0.3, hspace=0.1)
             plt.axis('off')
             for i in range(min(len(history), 42)):
                 if i > 0 and history_iters[i] == history_iters[i - 1]:
@@ -546,35 +577,21 @@ def recovery(opt, id):
             if i!= 5:
                 plt.savefig('%s/%s_%s_%s_%s_%s_on_%s_%05d.jpg' % (
                     save_filename, opt.model_type, opt.method, opt.init_method, opt.compress_rate, opt.filter_method, opt.dataset, id))
-                # print(save_filename, save_filename, opt.model_type, opt.method, opt.init_method, opt.compress_rate, opt.filter_method, opt.dataset, id)
             else:
                 plt.savefig('%s/%s_%s_%s_%s_on_%s_%05d.png' % (
                     save_filename, opt.model_type, opt.method, opt.init_method, opt.compress_rate, opt.dataset, id))
             plt.close()
         if opt.isSave and (iters == 90):
-            # 只保存第90轮的图像，其他信息不需要
             fig = plt.figure(figsize=(12, 8))
-
-            # 设置图像标题（可选）
             plt.suptitle('第90轮图像', fontsize=16)
-
-            # 显示真实图像
             plt.subplot(1, 2, 1)
             plt.imshow(tp(gt_data[0].cpu()))
             plt.axis('off')
             plt.title("Ground Truth")
-
-
-
-            # 调整布局
             plt.tight_layout()
-
-            # 保存图像到指定路径
-            save_path = r'F:\下载\机器遗忘初版\机器遗忘\90'  # 指定目录
+            save_path = r'F:\下载\机器遗忘初版\机器遗忘\90'
             plt.savefig(
                 f'{save_path}/iteration_90_{opt.model_type}_{opt.method}_{opt.init_method}_{opt.compress_rate}_{opt.dataset}_{id}.png')
-
-            # 关闭图像，避免占用内存
             plt.close()
 
         if opt.filter and iters % opt.filter_frequency == 0 and iters > 0:
@@ -597,19 +614,11 @@ def recovery(opt, id):
                 with torch.no_grad():
                     Out = torch.clamp(img - filterModel(img), 0., 255.)
                 img = tt(tp(Out[0].cpu())).to(device)
-                # dummy_img = tp(Out[0].cpu())
-                # dummy_name = '%s/%s_%s_%s_%s_%s_on_%s_%05d_end.jpg' % (
-                #     save_filename, opt.model_type, opt.method, opt.init_method, opt.compress_rate,
-                #     opt.filter_method,
-                #     opt.dataset, id)
-                # dummy_img.save(dummy_name)
-                # img = Image.open(dummy_name)
-                # img = tt(img).to(device)
             else:
                 print("No such filter method")
                 exit()
             dummy_data = img.view(1, img.shape[0], img.shape[1],
-                                  img.shape[2]).to(device)  # .to(device).detach()
+                                  img.shape[2]).to(device)
             dummy_data = dummy_data.requires_grad_(True)
             if opt.method == 'DLG':
                 optimizer = torch.optim.LBFGS([dummy_data, dummy_label], lr=opt.lr)
@@ -627,11 +636,10 @@ def recovery(opt, id):
 
     loss = losses
     label = label_pred.item()
-    # ssim_iDLG = pytorch_ssim.ssim(dummy_data, gt_data).data[0]
-    # print('SSIM:', ssim_iDLG)
     print('PSNR:', psnrs[-1])
     print('loss {}:'.format(opt.method), loss[-1])
     print('mse_{}:'.format(opt.method), mses[-1])
+    print('最终异常分数:', anomaly_scores[-1])  # 新增：打印最终异常分数
     print('gt_label:', gt_label.detach().cpu().data.numpy(), 'lab_{}:'.format(opt.method), label)
     dummy_img = tp(transform(tp(dummy_data[0].cpu())))
 
@@ -644,11 +652,10 @@ def recovery(opt, id):
             save_filename, opt.model_type, opt.method, opt.init_method, opt.compress_rate, opt.dataset, id)
     dummy_img.save(dummy_name)
     if mses[-1] < 0.05:
-        # avg_ssim += ssim_iDLG
         print('success')
     else:
         print("fail")
-    return loss, mses, psnrs, ssims
+    return loss, mses, psnrs, ssims, anomaly_scores  # 新增：返回异常分数
 
 
 def getOpt():
@@ -691,6 +698,10 @@ def getOpt():
 
     # add noise
     parser.add_argument('--noise_level', default=0, type=float, help="")
+    
+    # 新增：异常分数损失相关参数
+    parser.add_argument('--anomaly_weight', default=0.1, type=float, help='异常分数损失的权重')
+    parser.add_argument('--ae_path', default='./models/autoencoder.pth', help='自编码器模型路径')
 
     opt = parser.parse_args()
     return opt
@@ -699,24 +710,25 @@ def getOpt():
 def main():
     opt = getOpt()
     sImages = [1000, 2000]
-    all_losses = []
     all_mses = []
     all_psnrs = []
     all_ssims = []
+    all_anomaly_scores = []  # 新增：保存所有图像的异常分数
     for i in sImages:
-        losses, mses, PSNR, ssim = recovery(opt, i)
-    all_losses.append(losses)
-    all_mses.append(mses)
-    all_psnrs.append(PSNR)
-    all_ssims.append(ssim)
+        losses, mses, PSNR, ssim, anomaly = recovery(opt, i)  # 新增：接收异常分数
+        all_mses.append(mses)
+        all_psnrs.append(PSNR)
+        all_ssims.append(ssim)
+        all_anomaly_scores.append(anomaly)  # 新增：保存异常分数
     if opt.filter:
         filename = "./recover_result/data/" + opt.model_type + "_" + opt.method + "_1" + "_" + opt.dataset + "_" + str(opt.filter_method) + "_" + str(opt.compress_rate) + "_" \
                    + opt.init_method + ".npz"
     else:
         filename = "./recover_result/data/" + opt.model_type + "_" + opt.method + "_1" + "_" + opt.dataset + "_" + str(opt.compress_rate) + "_" + opt.init_method + ".npz"
-    np.savez(filename, all_losses=all_losses, all_mses=all_mses, all_psnrs=all_psnrs, all_ssims=all_ssims)
+    # 新增：保存异常分数
+    np.savez(filename, all_losses=all_losses, all_mses=all_mses, all_psnrs=all_psnrs, 
+             all_ssims=all_ssims, all_anomaly_scores=all_anomaly_scores)
 
 
 if __name__ == '__main__':
     main()
-
