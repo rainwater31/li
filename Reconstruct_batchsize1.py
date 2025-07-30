@@ -98,48 +98,6 @@ def total_variation(x):
     dy = torch.mean(torch.abs(x[:, :, :-1, :] - x[:, :, 1:, :]))
     return dx + dy
 
-
-# def grad2InitImg(attacked_model, gi_model, original_img, attacked_model_type="res18"):
-#     device = original_img.device  # 获取原始图像张量的设备信息
-#     attacked_model.to(device)
-#     gi_model.to(device)
-#
-#     # Step 1: 第一次训练会话
-#     # 在 original_img 和 another_img（假设是第二张图像）上进行训练
-#     original_img = original_img.view(-1, 3, 32, 32)
-#
-#     # 生成与 original_img 相同尺寸的随机图像
-#     another_img = torch.randn_like(original_img)
-#
-#     # images = torch.cat((original_img, another_img), dim=0)
-#
-#     pred = attacked_model(images)
-#     loss = torch.nn.CrossEntropyLoss()(pred, torch.LongTensor([0, 1]).to(device))
-#
-#     # 计算第一次训练会话后的梯度
-#     grad_first_session = torch.autograd.grad(loss, attacked_model.parameters(), retain_graph=True)
-#
-#     # Step 2: 第二次训练会话（遗忘一张图像）
-#     # 只在 original_img 上重新训练（遗忘 another_img）
-#     pred_forget = attacked_model(original_img)
-#     loss_forget = torch.nn.CrossEntropyLoss()(pred_forget, torch.LongTensor([0]).to(device))
-#
-#     # 计算第二次训练会话后的梯度
-#     grad_second_session = torch.autograd.grad(loss_forget, attacked_model.parameters())
-#
-#     # Step 3: 计算梯度差异
-#     grad_diff = []
-#     for grad1, grad2 in zip(grad_first_session, grad_second_session):
-#         grad_diff.append(grad1-grad1+grad2)
-#         # print(grad_diff)
-#         if attacked_model_type == "res18":
-#            grad_input = grad_diff[-2][:10].reshape(10, 32768, 1, 1)
-#         # if attacked_model_type == "lenet":
-#         #    grad_input = grad_diff[-2][:20].reshape(20, 768, 1, 1)
-#            recons = gi_model(grad_input)
-#         return recons
-
-
 def grad2InitImg(attacked_model, gi_model, original_img, attacked_model_type="res18"):
     attacked_model.to(device)
     gi_model.to(device)
@@ -224,186 +182,6 @@ def recovery(opt, id):
             same_labels_images.append(ii)
             print("find it!!")
             break
-    # '''
-    # id1 = 35  # Replace with a valid index in your dataset
-    # id2 = 50  # Replace with a valid index in your dataset
-    #
-    # # Retrieve the data and move to the appropriate device
-    # gt_data1 = dst[id1][0].to(device)
-    # gt_data2 = dst[id2][0].to(device)
-    #
-    # # Duplicate channels if the dataset is MNIST or FMNIST
-    # if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
-    #     gt_data1 = torch.cat([gt_data1, gt_data1, gt_data1], dim=0)
-    #     gt_data2 = torch.cat([gt_data2, gt_data2, gt_data2], dim=0)
-    #
-    # # Reshape data to include the batch dimension
-    # gt_data1 = gt_data1.view(1, gt_data1.shape[0], gt_data1.shape[1], gt_data1.shape[2])
-    # gt_data2 = gt_data2.view(1, gt_data2.shape[0], gt_data2.shape[1], gt_data2.shape[2])
-    #
-    # # Retrieve labels and move to the appropriate device
-    # gt_label1 = torch.tensor([dst[id1][1]]).to(torch.int64).to(device)
-    # gt_label2 = torch.tensor([dst[id2][1]]).to(torch.int64).to(device)
-    #
-    # # Initial forward pass
-    # out1 = net(gt_data1)
-    # out2 = net(gt_data2)
-    #
-    # # Process labels
-    # def process_label(gt_label, dataset, model_type):
-    #     if model_type == "ResNet18":
-    #         if dataset == "CelebA":
-    #             gt_label_input = int(gt_label) * 499 // 10176
-    #         elif dataset == "lfw":
-    #             gt_label_input = int(gt_label) * 499 // 5748
-    #         elif dataset == "ImgNet":
-    #             gt_label_input = int(gt_label) * 499 // 999
-    #         else:
-    #             gt_label_input = gt_label
-    #     else:
-    #         gt_label_input = gt_label
-    #
-    #     gt_label_input = int(gt_label_input.cpu().item())
-    #     return torch.tensor([gt_label_input]).to(torch.int64).to(device).view(1)
-    #
-    # gt_label_input1 = process_label(gt_label1, opt.dataset, opt.model_type)
-    # gt_label_input2 = process_label(gt_label2, opt.dataset, opt.model_type)
-    #
-    # # Compute initial gradients
-    # y1 = criterion(out1, gt_label_input1)
-    # dy_dx1 = torch.autograd.grad(y1, net.parameters())
-    #
-    # y2 = criterion(out2, gt_label_input2)
-    # dy_dx2 = torch.autograd.grad(y2, net.parameters())
-    #
-    # # # Second forward pass with the first data point
-    # # out_second = net(gt_data1)
-    # # gt_label_input_second = process_label(gt_label1, opt.dataset, opt.model_type)
-    # #
-    # # # Compute second gradients
-    # # y_second = criterion(out_second, gt_label_input_second)
-    # # dy_dx_second = torch.autograd.grad(y_second, net.parameters())
-    #
-    # # Calculate gradient differences
-    # gradient_diff = [(g1 - g2).detach().clone().cpu() for g1, g2 in zip(dy_dx1+dy_dx2, dy_dx1)]
-    #
-    # # Compression and optional noise addition
-    # dy_dx, mask_tuple = compress(gradient_diff, opt.compress_rate)
-    #
-    # # if opt.noise_level == 0:
-    # original_dy_dx = [i.to(device) for i in dy_dx]
-    # # else:
-    # #     original_dy_dx = [i.to(device) + torch.normal(mean=0., std=opt.noise_level, size=i.size()).to(device) for i in
-    # #                       dy_dx]
-    #
-    # # Label prediction
-    # label_pred = torch.argmin(torch.sum(original_dy_dx[-2], dim=-1), dim=-1).detach().reshape((1,)).requires_grad_(
-    #     False)
-
-    # for id1 in range(len(dst) - 1):
-    #     id2 = id1 + 1
-    # gt_data1 = dst[id1][0].to(device)
-    # gt_data2 = dst[id2][0].to(device)
-    #
-    # if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
-    #     gt_data1 = torch.cat([gt_data1, gt_data1, gt_data1], dim=0)
-    #     gt_data2 = torch.cat([gt_data2, gt_data2, gt_data2], dim=0)
-    #
-    # gt_data1 = gt_data1.view(1, gt_data1.shape[0], gt_data1.shape[1], gt_data1.shape[2])
-    # gt_data2 = gt_data2.view(1, gt_data2.shape[0], gt_data2.shape[1], gt_data2.shape[2])
-    #
-    # gt_label1 = torch.tensor([dst[id1][1]]).to(torch.int64).to(device)
-    # gt_label2 = torch.tensor([dst[id2][1]]).to(torch.int64).to(device)
-    #
-    # # 第一次前向传递
-    # gt_input1 = gt_data1
-    # gt_input2 = gt_data2
-    #
-    # out1 = net(gt_input1)
-    # out2 = net(gt_input2)
-    #
-    # # 处理特定数据集和模型的标签（同样适用两次）
-    # def process_label(gt_label, dataset, model_type):
-    #     if model_type == "ResNet18" and dataset == "CelebA":
-    #         gt_label_input = int(gt_label) * 499 // 10176
-    #     elif model_type == "ResNet18" and dataset == "lfw":
-    #         gt_label_input = int(gt_label) * 499 // 5748
-    #     elif model_type == "ResNet18" and dataset == "ImgNet":
-    #         gt_label_input = int(gt_label) * 499 // 999
-    #     else:
-    #         gt_label_input = gt_label
-    #     return torch.tensor(np.asarray(gt_label_input)).to(torch.int64).to(device).view(1)
-    #
-    # gt_label_input1 = process_label(gt_label1, opt.dataset, opt.model_type)
-    # gt_label_input2 = process_label(gt_label2, opt.dataset, opt.model_type)
-    #
-    # # 计算第一次的损失和梯度
-    # y1 = criterion(out1, gt_label_input1)
-    # dy_dx1 = torch.autograd.grad(y1, net.parameters())
-    #
-    # y2 = criterion(out2, gt_label_input2)
-    # dy_dx2 = torch.autograd.grad(y2, net.parameters())
-    #
-    # # 获取和处理第二次的图片（取第一次中的一张）
-    # gt_data_second = gt_data1
-    # gt_label_second = gt_label1
-    #
-    # # 第二次前向传递
-    # gt_input_second = gt_data_second
-    # out_second = net(gt_input_second)
-    #
-    # gt_label_input_second = process_label(gt_label_second, opt.dataset, opt.model_type)
-    #
-    # # 计算第二次的损失和梯度
-    # y_second = criterion(out_second, gt_label_input_second)
-    # dy_dx_second = torch.autograd.grad(y_second, net.parameters())
-    #
-    # # 计算两次梯度的差值
-    # gradient_diff = [(g1 - g2).detach().clone().cpu() for g1, g2 in zip(dy_dx1, dy_dx_second)]
-    #
-    # # 压缩和噪声处理
-    # dy_dx, mask_tuple = compress(gradient_diff, opt.compress_rate)
-    #
-    # if opt.noise_level == 0:
-    #     original_dy_dx = [i.to(device) for i in dy_dx]
-    # else:
-    #     original_dy_dx = [i.to(device) + torch.normal(mean=0., std=opt.noise_level, size=i.size()).to(device) for i in
-    #                       dy_dx]
-
-    # 第一次训练，使用两张图片
-    # gt_data_1 = dst[id][0].to(device)
-    # gt_data_2 = dst[id + 1][0].to(device)  # 假设第二张图片的id是 id + 1
-    #
-    # if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
-    #     gt_data_1 = torch.cat([gt_data_1, gt_data_1, gt_data_1], dim=0)
-    #     gt_data_2 = torch.cat([gt_data_2, gt_data_2, gt_data_2], dim=0)
-    #
-    # gt_data_1 = gt_data_1.view(1, gt_data_1.shape[0], gt_data_1.shape[1], gt_data_1.shape[2])
-    # gt_data_2 = gt_data_2.view(1, gt_data_2.shape[0], gt_data_2.shape[1], gt_data_2.shape[2])
-    #
-    # gt_label_1 = torch.tensor([dst[id][1]]).to(torch.int64).to(device)
-    # gt_label_2 = torch.tensor([dst[id + 1][1]]).to(torch.int64).to(device)
-    #
-    # # 将两张图片和标签合并
-    # gt_data = torch.cat([gt_data_1, gt_data_2], dim=0)
-    # gt_label = torch.cat([gt_label_1, gt_label_2], dim=0)
-    #
-    # gt_input = gt_data
-    # out = net(gt_input)
-    #
-    # if opt.model_type == "ResNet18" and opt.dataset == "CelebA":
-    #     gt_label_input = gt_label * 499 // 10176
-    # elif opt.model_type == "ResNet18" and opt.dataset == "lfw":
-    #     gt_label_input = gt_label * 499 // 5748
-    # elif opt.model_type == "ResNet18" and opt.dataset == "ImgNet":
-    #     gt_label_input = gt_label * 499 // 999
-    # else:
-    #     gt_label_input = gt_label
-    #
-    # y = criterion(out, gt_label_input)
-    # dy_dx_1 = torch.autograd.grad(y, net.parameters())
-    # original_dy_dx_1 = list((_.detach().clone().cpu() for _ in dy_dx_1))
-
 
     # Iterate through the dataset and process each image-label pair individually
 
@@ -494,34 +272,6 @@ def recovery(opt, id):
         original_dy_dx = [i.to(device) + torch.normal(mean=0., std=opt.noise_level, size=i.size()).to(device) for i in
                           dy_dx]
 
-    # gt_data = dst[id][0].to(device)
-    # if opt.dataset == "MNIST" or opt.dataset == "FMNIST":
-    #     gt_data = torch.cat([gt_data,gt_data,gt_data],dim=0)
-    # gt_data = gt_data.view(1, gt_data.shape[0], gt_data.shape[1], gt_data.shape[2])
-    # gt_label = torch.tensor([dst[id][1]]).to(torch.int64).to(device)
-    # gt_input = gt_data
-    # out = net(gt_input)
-    # if opt.model_type == "ResNet18" and opt.dataset == "CelebA":
-    #     gt_label_input = int(gt_label) * 499 // 10176
-    #     gt_label_input = torch.tensor(np.asarray(gt_label_input)).to(torch.int64).to(device).view(1)
-    # elif opt.model_type == "ResNet18" and opt.dataset == "lfw":
-    #     gt_label_input = int(gt_label) * 499 // 5748
-    #     gt_label_input = torch.tensor(np.asarray(gt_label_input)).to(torch.int64).to(device).view(1)
-    # elif opt.model_type == "ResNet18" and opt.dataset == "ImgNet":
-    #     gt_label_input = int(gt_label) * 499 // 999
-    #     gt_label_input = torch.tensor(np.asarray(gt_label_input)).to(torch.int64).to(device).view(1)
-    # else:
-    #     gt_label_input = gt_label
-    # y = criterion(out, gt_label_input)
-    # dy_dx = torch.autograd.grad(y, net.parameters())
-    # original_dy_dx = list((_.detach().clone().cpu() for _ in dy_dx))
-    # dy_dx, mask_tuple = compress(original_dy_dx, opt.compress_rate)
-    # if opt.noise_level == 0:
-    #     original_dy_dx = [i.to(device) for i in dy_dx]
-    # else:
-    #     original_dy_dx = [i.to(device)+torch.normal(mean=0.,std=opt.noise_level,size=i.size()).to(device) for i in dy_dx]
-
-    # ,"prop_inf" , "img" , "Random" , "min_gloss"
     save_filename = '{}{}_{}_{}_{}_{}_1'.format(opt.save_path, opt.model_type, opt.method, opt.dataset, opt.compress_rate,
                                            opt.init_method)
     print('%s - %s - Filter:%s' % (opt.method, opt.init_method, str(opt.filter)))
@@ -636,20 +386,6 @@ def recovery(opt, id):
         optimizer = torch.optim.Adam([dummy_data], lr=opt.lr)
         print("预测的标签是:", label_pred)
 
-    # if opt.method == 'DLG':
-    #     dummy_label = torch.randn((gt_data2.shape[0], num_classes)).to(device).requires_grad_(True)
-    #     optimizer = torch.optim.LBFGS([dummy_data, dummy_label], lr=opt.lr)
-    # elif opt.method == 'geiping':
-    #     label_pred = torch.argmin(torch.sum(original_dy_dx[-2], dim=-1), dim=-1).detach().reshape(
-    #         (1,)).requires_grad_(False)
-    #     optimizer = torch.optim.LBFGS([dummy_data, ], lr=opt.lr)
-    #     print("预测的标签是:", label_pred)
-    # else:
-    #     label_pred = torch.argmin(torch.sum(original_dy_dx[-2], dim=-1), dim=-1).detach().reshape(
-    #         (1,)).requires_grad_(False)
-    #     optimizer = torch.optim.LBFGS([dummy_data, ], lr=opt.lr)
-    #     print("预测的标签是:", label_pred)
-
     history = []
     history_iters = []
     losses = []
@@ -689,43 +425,6 @@ def recovery(opt, id):
             # dummy_dy_dx的非topk位置置0
             dummy_dy_dx = list(dummy_dy_dx)
 
-
-        # def closure():
-        #     optimizer.zero_grad()  # 清空优化器的梯度缓存
-        #
-        #     pred = net(dummy_data)  # 使用网络对 dummy_data 进行前向传播，得到预测值 pred
-        #
-        #     # 计算主损失 (dummy_loss)
-        #     if opt.method == 'DLG':
-        #         dummy_loss = -torch.mean(
-        #             torch.sum(torch.softmax(dummy_label, -1) * torch.log(torch.softmax(pred, -1)), dim=-1))
-        #     else:
-        #         dummy_loss = criterion(pred, gt_label)
-        #
-        #     # 计算虚拟图像与真实图像的总差异分数 (data_difference_loss)
-        #     data_difference_loss = torch.nn.functional.mse_loss(dummy_data, real_data)
-        #
-        #     # 合并总损失，加入总差异分数的权重 (例如 0.5)
-        #     total_loss = dummy_loss + 0.5 * data_difference_loss
-        #     total_loss.backward()  # 计算梯度
-
-            # return total_loss
-
-            # if iters%10 == 0:
-            #     imp = dummy_dy_dx[-2].cpu().detach().numpy()
-            #     f1 = plt.figure()
-            #     ax = f1.add_subplot(projection='3d')
-            #     x = np.arange(imp.shape[1])
-            #     y = np.arange(imp.shape[0])
-            #     X, Y = np.meshgrid(x, y)
-            #     surf = ax.plot_surface(X, Y, imp, cmap=cm.coolwarm,
-            #                            linewidth=0, antialiased=False)
-            #     f1.colorbar(surf, shrink=0.5, aspect=5)
-            #     f2 = plt.figure()
-            #     plt.plot(np.arange(12), dummy_dy_dx[5].cpu().detach().numpy(), color="blue", linewidth=2.5, linestyle="-", label='b3')
-            #     plt.plot(np.arange(12), dummy_dy_dx[3].cpu().detach().numpy(), color="green", linewidth=2.5, linestyle="-", label='b2')
-            #     plt.plot(np.arange(12), dummy_dy_dx[1].cpu().detach().numpy(), color="yellow", linewidth=2.5, linestyle="-", label='b1')
-            #     plt.show()
             if opt.method == 'HCGLA':
                 i = 0
                 for tmp_1, tmp_2 in zip(dummy_dy_dx, mask_tuple):
@@ -906,29 +605,6 @@ def recovery(opt, id):
                 # dummy_img.save(dummy_name)
                 # img = Image.open(dummy_name)
                 # img = tt(img).to(device)
-            elif opt.filter_method == 'mean':
-                img = cv2.imread(dummy_name)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # 颜色模式转换
-                img = cv2.blur(img, (3, 3))
-                img = F.to_tensor(img)
-            # 高斯滤波
-            elif opt.filter_method == 'Guassian':
-                img = cv2.imread(dummy_name)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # 颜色模式转换
-                img = cv2.GaussianBlur(img, (3, 3), 0)
-                img = F.to_tensor(img)
-            # 中值滤波
-            elif opt.filter_method == 'median':
-                img = cv2.imread(dummy_name)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # 颜色模式转换
-                img = cv2.medianBlur(img, 3)
-                img = F.to_tensor(img)
-            # 双边滤波
-            elif opt.filter_method == 'bilater':
-                img = cv2.imread(dummy_name)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # 颜色模式转换
-                img = cv2.bilateralFilter(img, 9, 75, 75)
-                img = F.to_tensor(img)
             else:
                 print("No such filter method")
                 exit()
@@ -1043,73 +719,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-    # sImages = [100, 200]
-    # transform = transforms.Compose([
-    #     transforms.Resize((128, 128)),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    # ])
-    #
-    # # 假设 PubFace 数据集已按类存放在指定目录下
-    # dataset = datasets.ImageFolder(root='F:\下载\机器遗忘初版\机器遗忘\data\pubface', transform=transform)
-    #
-    # # 划分训练集和非成员集（用于成员推理攻击的非训练数据）
-    # train_size = int(0.8 * len(dataset))
-    # non_member_size = len(dataset) - train_size
-    # train_data, non_member_data = random_split(dataset, [train_size, non_member_size])
-    #
-    # train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-    # non_member_loader = DataLoader(non_member_data, batch_size=32, shuffle=True)
-    #
-    # model = models.lenet(pretrained=True)
-    # model.fc = nn.Linear(model.fc.in_features, 2)  # 假设二分类任务
-    # model = model.to('cuda')
-    #
-    # criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.Adam(model.parameters(), lr=0.001)
-    #
-    # for epoch in range(5):  # 训练 5 个 epoch
-    #     model.train()
-    #     for images, labels in train_loader:
-    #         images, labels = images.to('cuda'), labels.to('cuda')
-    #
-    #         optimizer.zero_grad()
-    #         outputs = model(images)
-    #         loss = criterion(outputs, labels)
-    #         loss.backward()
-    #         optimizer.step()
-    #
-    #     print(f"Epoch [{epoch + 1}/5], Loss: {loss.item():.4f}")
-    #
-    #
-    # def single_image_membership_inference(image_path, model, threshold=0.8):
-    #     """
-    #     对单张图像执行成员推理攻击，以判断该图像是否属于原始训练数据集。
-    #
-    #     :param image_path: 要判断的图像路径
-    #     :param model: 训练好的模型
-    #     :param threshold: 判定为“是数据集”的置信度阈值
-    #     :return: 返回判断结果 "是数据集" 或 "不是数据集"
-    #     """
-    #     # 加载并预处理图像
-    #     image = Image.open(image_path).convert("RGB")
-    #     image = transform(image).unsqueeze(0).to('cuda')  # 增加批次维度以适应模型输入
-    #
-    #     # 模型推理
-    #     model.eval()
-    #     with torch.no_grad():
-    #         output = model(image)
-    #         prob = torch.softmax(output, dim=1)
-    #         max_prob, _ = torch.max(prob, dim=1)
-    #
-    #         # 判断是否属于数据集
-    #         is_member = "是数据集" if max_prob.item() > threshold else "不是数据集"
-    #
-    #     return is_member
-    #
-    #
-    # # 示例：指定图像路径并运行成员推理攻击
-    # image_path = sImages  # 替换为要判断的图像路径
-    # result = single_image_membership_inference(image_path, model, threshold=0.8)
-    # print(f"该图像是否属于原始数据集: {result}")
 
